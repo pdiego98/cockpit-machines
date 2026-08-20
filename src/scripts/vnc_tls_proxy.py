@@ -117,38 +117,48 @@ def main():
         for _ in range(num_subtypes):
             subtypes.append(int.from_bytes(target_sock.recv(4), 'big'))
             
-        # TLSNone (258), TLSVnc (259), TLSPlain (257)
+        # VeNCrypt subtypes:
+        #   TLS (anonymous DH): TLSNone=257, TLSVnc=258, TLSPlain=259
+        #   X.509:              X509None=260, X509Vnc=261, X509Plain=262
+        # Priority: prefer *None, then *Vnc, then *Plain
+        SUBTYPE_PRIORITY = [260, 257, 261, 258, 262, 259]
         chosen_subtype = None
-        if 258 in subtypes:
-            chosen_subtype = 258
-        elif 259 in subtypes:
-            chosen_subtype = 259
-        elif 257 in subtypes:
-            chosen_subtype = 257
-        else:
-            raise Exception(f"No supported TLS subtype found. Offered: {subtypes}")
-            
+        for pref in SUBTYPE_PRIORITY:
+            if pref in subtypes:
+                chosen_subtype = pref
+                break
+        if chosen_subtype is None:
+            raise Exception(f"No supported VeNCrypt subtype found. Offered: {subtypes}")
+
+        debug(f"VeNCrypt: offered {subtypes}, chosen {chosen_subtype}")
         target_sock.sendall(chosen_subtype.to_bytes(4, 'big'))
-        
+
+        # VeNCrypt requires a 1-byte ACK from server after subtype selection
+        ack = target_sock.recv(1)
+        if ack != b'\x01':
+            raise Exception(f"Server rejected chosen subtype {chosen_subtype}, ack={ack!r}")
+
         # 7. Upgrade to TLS
         server_hostname = args.host
         if context.verify_mode == ssl.CERT_NONE or args.host.replace('.', '').isdigit() or ':' in args.host:
             server_hostname = None
-            
+
         tls_sock = context.wrap_socket(target_sock, server_hostname=server_hostname)
-        
+        debug(f"TLS handshake complete with {args.host}:{args.port}")
+
         # --- Fake Handshake to noVNC ---
-        # Send RFB to noVNC
+        # Send RFB version to noVNC
         client_sock.sendall(server_rfb)
-        
-        # Read noVNC's RFB
+
+        # Read noVNC's RFB version response
         client_rfb = client_sock.recv(12)
-        
-        # Send fake security types to noVNC based on what we negotiated over TLS
-        fake_sec_type = 1 # None
-        if chosen_subtype == 259:
-            fake_sec_type = 2 # VncAuth
-            
+
+        # If server uses a Vnc-auth subtype, ask noVNC for password; otherwise None auth
+        if chosen_subtype in (258, 261):  # TLSVnc, X509Vnc
+            fake_sec_type = 2  # VncAuth
+        else:
+            fake_sec_type = 1  # None
+
         client_sock.sendall(b'\x01' + bytes([fake_sec_type]))
         
         # Read noVNC's chosen security type
