@@ -398,7 +398,7 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
                         vncTlsProxyScript as string,
                         consoleDetail.address,
                         portStr
-                    ], { err: "message" });
+                    ], { err: "message", superuser: "try" });
 
                     const proxy_port_str = await new Promise<string>((resolve, reject) => {
                         let out = "";
@@ -490,6 +490,11 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
         } else {
             reason = _("Failed to connect");
         }
+        if (this.proxy_channel) {
+            this.proxy_channel.close();
+            this.proxy_channel = null;
+        }
+        this.setState({ path: undefined });
         this.props.state.setDisconnected(reason);
     }
 

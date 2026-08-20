@@ -42,11 +42,11 @@ def create_ssl_context():
         if ca_loaded:
             break
 
-    if not ca_loaded:
-        # If no CA is found, we might have to disable verification 
-        # (though this is insecure, it might be the only way if certs aren't readable)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+    # Always disable server hostname verification because VNC targets are often IPs
+    context.check_hostname = False
+    
+    # Optionally, we can also disable server cert verification to avoid issues with self-signed certs
+    context.verify_mode = ssl.CERT_NONE
 
     return context
 
@@ -74,9 +74,15 @@ def main():
 
     try:
         context = create_ssl_context()
-        # Connect to the target VNC server
         target_sock = socket.create_connection((args.host, args.port))
-        tls_sock = context.wrap_socket(target_sock, server_hostname=args.host if context.verify_mode != ssl.CERT_NONE else None)
+        
+        server_hostname = args.host
+        # If verify_mode is CERT_NONE or host is an IP address, don't pass server_hostname
+        # to avoid ValueError: server_hostname cannot be an IP address
+        if context.verify_mode == ssl.CERT_NONE or args.host.replace('.', '').isdigit() or ':' in args.host:
+            server_hostname = None
+            
+        tls_sock = context.wrap_socket(target_sock, server_hostname=server_hostname)
     except Exception as e:
         print(f"Failed to connect to VNC server {args.host}:{args.port} over TLS: {e}", file=sys.stderr)
         client_sock.close()
