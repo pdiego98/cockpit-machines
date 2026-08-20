@@ -40,6 +40,7 @@ import { domainSendKey, virtXmlAdd, virtXmlEdit, domainGet } from '../../../libv
 import { appState } from '../../../state';
 
 import { VncConsole, VncCredentials } from './VncConsole';
+import vncTlsProxyScript from '../../../scripts/vnc_tls_proxy.py';
 
 const _ = cockpit.gettext;
 
@@ -81,7 +82,7 @@ interface VncEditValues {
 const VncEditModal = ({
     vm,
     inactive_vnc
-} : {
+}: {
     vm: VM,
     inactive_vnc: VMGraphics,
 }) => {
@@ -145,7 +146,7 @@ const VncEditModal = ({
         >
             <ModalHeader title={_("Edit VNC settings")} />
             <ModalBody>
-                { vm.state === 'running' &&
+                {vm.state === 'running' &&
                     <NeedsShutdownAlert idPrefix="vnc-edit" />
                 }
                 <DialogErrorMessage dialog={dlg} />
@@ -202,7 +203,7 @@ export const VncActiveActions = ({
     state,
     vm,
     isExpanded,
-} : {
+}: {
     state: VncState,
     vm: VM,
     isExpanded: boolean,
@@ -231,7 +232,7 @@ export const VncActiveActions = ({
         );
     }
 
-    const renderDropdownItem = ([keyName, keyCode] : [string, number]) => {
+    const renderDropdownItem = ([keyName, keyCode]: [string, number]) => {
         return (
             <DropdownItem
                 id={cockpit.format("ctrl-alt-$0", keyName)}
@@ -247,11 +248,11 @@ export const VncActiveActions = ({
                             keyCode,
                         ]
                     })
-                            .catch(ex => appState.addNotification({
-                                text: cockpit.format(_("Failed to send key Ctrl+Alt+$0 to VM $1"), keyName, vm.name),
-                                detail: ex.message,
-                                resourceId: vm.id,
-                            }));
+                        .catch(ex => appState.addNotification({
+                            text: cockpit.format(_("Failed to send key Ctrl+Alt+$0 to VM $1"), keyName, vm.name),
+                            detail: ex.message,
+                            resourceId: vm.id,
+                        }));
                 }}>
                 {cockpit.format(_("Ctrl+Alt+$0"), keyName)}
             </DropdownItem>
@@ -295,7 +296,7 @@ const VncFooter = ({
     vm,
     vnc,
     inactive_vnc,
-} : {
+}: {
     vm: VM,
     vnc: null | VMGraphics,
     inactive_vnc: undefined | VMGraphics,
@@ -340,6 +341,7 @@ interface VncActiveState {
 export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
     credentials: null | VncCredentials = null;
     observer: MutationObserver;
+    proxy_channel: any = null;
 
     constructor(props: VncActiveProps) {
         super(props);
@@ -379,17 +381,52 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
             return;
         }
 
-        cockpit.transport.wait(() => {
+        cockpit.transport.wait(async () => {
             const portStr = consoleDetail.tlsPort || consoleDetail.port;
             if (!portStr)
                 return;
+
+            let targetAddress = consoleDetail.address;
+            let targetPort = parseInt(portStr, 10);
+
+            try {
+                const qemu_conf = await readQemuConf();
+                if (qemu_conf.vnc_tls) {
+                    const proxy_channel = cockpit.spawn([
+                        "python3",
+                        "-c",
+                        vncTlsProxyScript as string,
+                        consoleDetail.address,
+                        portStr
+                    ], { err: "message" });
+
+                    const proxy_port_str = await new Promise<string>((resolve, reject) => {
+                        let out = "";
+                        proxy_channel.stream(data => {
+                            out += data;
+                            if (out.includes('\n')) {
+                                resolve(out.trim());
+                            }
+                        });
+                        proxy_channel.done(reject);
+                    });
+
+                    targetAddress = "127.0.0.1";
+                    targetPort = parseInt(proxy_port_str, 10);
+                    this.proxy_channel = proxy_channel;
+                }
+            } catch (e) {
+                console.error("VNC TLS proxy error:", e);
+                this.props.state.setDisconnected(_("Failed to start VNC TLS proxy"));
+                return;
+            }
 
             const prefix = (new URL(cockpit.transport.uri("channel/" + cockpit.transport.csrf_token))).pathname;
             const query = JSON.stringify({
                 payload: "stream",
                 binary: "raw",
-                address: consoleDetail.address,
-                port: parseInt(portStr, 10),
+                address: targetAddress,
+                port: targetPort,
                 // https://issues.redhat.com/browse/COCKPIT-870
                 // https://issues.redhat.com/browse/RHEL-3959
                 host: cockpit.transport.host,
@@ -406,6 +443,13 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
 
     componentDidUpdate() {
         this.connect(this.props);
+    }
+
+    componentWillUnmount() {
+        if (this.proxy_channel) {
+            this.proxy_channel.close();
+            this.proxy_channel = null;
+        }
     }
 
     getEncrypt(): boolean {
@@ -444,13 +488,7 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
             // already, so we keep it.
             reason = this.props.state.failure_reason;
         } else {
-            // This might be TLS.
-            const qemu_conf = await readQemuConf();
-            if (qemu_conf.vnc_tls) {
-                reason = _("VNC with TLS is not supported by the in-page viewer");
-            } else {
-                reason = _("Failed to connect");
-            }
+            reason = _("Failed to connect");
         }
         this.props.state.setDisconnected(reason);
     }
@@ -511,32 +549,32 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
 
         return (
             <>
-                { state.connected
+                {state.connected
                     ? <VncConsole
-                          host={window.location.hostname}
-                          port={window.location.port || (encrypt ? '443' : '80')}
-                          path={path}
-                          encrypt={encrypt}
-                          onConnected={this.onConnected}
-                          onDisconnected={this.onDisconnected}
-                          getCredentials={this.getCredentials}
-                          onInitFailed={this.onInitFailed}
-                          onSecurityFailure={this.onSecurityFailure}
-                          consoleContainerId={isExpanded ? "vnc-display-container-expanded" : "vnc-display-container-minimized"}
-                          scaleViewport={scaleViewport}
-                          resizeSession={resizeSession}
-                          shared={shared}
+                        host={window.location.hostname}
+                        port={window.location.port || (encrypt ? '443' : '80')}
+                        path={path}
+                        encrypt={encrypt}
+                        onConnected={this.onConnected}
+                        onDisconnected={this.onDisconnected}
+                        getCredentials={this.getCredentials}
+                        onInitFailed={this.onInitFailed}
+                        onSecurityFailure={this.onSecurityFailure}
+                        consoleContainerId={isExpanded ? "vnc-display-container-expanded" : "vnc-display-container-minimized"}
+                        scaleViewport={scaleViewport}
+                        resizeSession={resizeSession}
+                        shared={shared}
                     />
                     : <div className="vm-console-vnc">
                         <EmptyState>
                             <EmptyStateBody>
-                                { state.failure_reason || _("Disconnected") }
+                                {state.failure_reason || _("Disconnected")}
                             </EmptyStateBody>
                             <EmptyStateFooter>
                                 <Button
                                     variant="primary"
                                     onClick={() => state.setConnected(true)}>
-                                    { state.failure_reason ? _("Retry") : _("Connect") }
+                                    {state.failure_reason ? _("Retry") : _("Connect")}
                                 </Button>
                             </EmptyStateFooter>
                         </EmptyState>
@@ -552,7 +590,7 @@ export const VncInactive = ({
     vm,
     inactive_vnc,
     isExpanded,
-} : {
+}: {
     vm: VM,
     inactive_vnc: VMGraphics,
     isExpanded: boolean,
@@ -572,7 +610,7 @@ export const VncInactive = ({
                     </Button>
                 </EmptyStateFooter>
             </EmptyState>
-            { !isExpanded &&
+            {!isExpanded &&
                 <VncFooter
                     vm={vm}
                     vnc={null}
@@ -585,7 +623,7 @@ export const VncInactive = ({
 
 export const VncMissing = ({
     vm
-} : {
+}: {
     vm: VM,
 }) => {
     const [inProgress, setInProgress] = useState(false);
@@ -629,7 +667,7 @@ export const VncPending = ({
     vm,
     inactive_vnc,
     isExpanded,
-} : {
+}: {
     vm: VM,
     inactive_vnc: VMGraphics,
     isExpanded: boolean,
@@ -651,7 +689,7 @@ export const VncPending = ({
                     </Button>
                 </EmptyStateFooter>
             </EmptyState>
-            { !isExpanded &&
+            {!isExpanded &&
                 <VncFooter
                     vm={vm}
                     vnc={null}
