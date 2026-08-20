@@ -399,10 +399,6 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
                         consoleDetail.address,
                         portStr
                     ], { err: "message", superuser: "try" });
-                    
-                    proxy_channel.addEventListener("message", (ev: any, data: string) => {
-                        console.error("VNC TLS Proxy stderr:", data);
-                    });
 
                     const proxy_port_str = await new Promise<string>((resolve, reject) => {
                         let out = "";

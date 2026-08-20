@@ -8,6 +8,10 @@ import sys
 import select
 import os
 
+def debug(msg):
+    with open("/tmp/cockpit_vnc_tls_proxy.log", "a") as f:
+        print(msg, file=f)
+
 def create_ssl_context():
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
     
@@ -30,14 +34,14 @@ def create_ssl_context():
                 context.load_verify_locations(cafile=ca_cert)
                 ca_loaded = True
             except Exception as e:
-                print(f"Failed to load CA cert {ca_cert}: {e}", file=sys.stderr)
+                debug(f"Failed to load CA cert {ca_cert}: {e}")
         
         if os.path.exists(client_cert) and os.path.exists(client_key):
             try:
                 context.load_cert_chain(certfile=client_cert, keyfile=client_key)
                 cert_loaded = True
             except Exception as e:
-                print(f"Failed to load client cert/key from {path}: {e}", file=sys.stderr)
+                debug(f"Failed to load client cert/key from {path}: {e}")
                 
         if ca_loaded:
             break
@@ -154,9 +158,9 @@ def main():
             
         # The handshake is now synchronized! The TLS tunnel is established, 
         # and both QEMU and noVNC expect the post-security-negotiation phase.
-        
+        debug("Handshake synchronized successfully.")
     except Exception as e:
-        print(f"Failed to connect to VNC server {args.host}:{args.port} over TLS: {e}", file=sys.stderr)
+        debug(f"Failed to connect to VNC server {args.host}:{args.port} over TLS: {e}")
         client_sock.close()
         sys.exit(1)
 
@@ -172,7 +176,7 @@ def main():
                     return
                 other_s.sendall(data)
     except Exception as e:
-        print(f"Proxy error: {e}", file=sys.stderr)
+        debug(f"Proxy error: {e}")
     finally:
         client_sock.close()
         tls_sock.close()
