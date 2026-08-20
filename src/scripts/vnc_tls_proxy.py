@@ -15,42 +15,67 @@ def debug(msg):
 def create_ssl_context():
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
     
-    # Common libvirt/qemu PKI paths
+    # PKI paths used by libvirt/QEMU for VNC TLS
+    # Filenames follow libvirt convention: client-cert.pem / client-key.pem
     pki_paths = [
         "/etc/pki/libvirt-vnc",
-        "/etc/pki/qemu"
+        "/etc/pki/qemu",
     ]
     
+    # Try both hyphenated (libvirt style) and non-hyphenated (older style) names
+    cert_name_pairs = [
+        ("client-cert.pem", "client-key.pem"),
+        ("clientcert.pem",  "clientkey.pem"),
+    ]
+    ca_names = ["ca-cert.pem", "ca-cert.pem"]  # same in both styles
+
     ca_loaded = False
     cert_loaded = False
-    
-    for path in pki_paths:
-        ca_cert = os.path.join(path, "ca-cert.pem")
-        client_cert = os.path.join(path, "clientcert.pem")
-        client_key = os.path.join(path, "clientkey.pem")
-        
+
+    for pki_path in pki_paths:
+        debug(f"Checking PKI path: {pki_path}")
+
+        # Try to load CA cert
+        ca_cert = os.path.join(pki_path, "ca-cert.pem")
         if os.path.exists(ca_cert):
+            debug(f"  Found CA cert: {ca_cert}")
             try:
                 context.load_verify_locations(cafile=ca_cert)
                 ca_loaded = True
+                debug(f"  Loaded CA cert OK")
             except Exception as e:
-                debug(f"Failed to load CA cert {ca_cert}: {e}")
-        
-        if os.path.exists(client_cert) and os.path.exists(client_key):
-            try:
-                context.load_cert_chain(certfile=client_cert, keyfile=client_key)
-                cert_loaded = True
-            except Exception as e:
-                debug(f"Failed to load client cert/key from {path}: {e}")
-                
-        if ca_loaded:
+                debug(f"  Failed to load CA cert: {e}")
+        else:
+            debug(f"  CA cert not found: {ca_cert}")
+
+        # Try to load client cert + key with all name variants
+        for cert_name, key_name in cert_name_pairs:
+            client_cert = os.path.join(pki_path, cert_name)
+            client_key  = os.path.join(pki_path, key_name)
+            debug(f"  Checking client cert: {client_cert} (exists={os.path.exists(client_cert)})")
+            debug(f"  Checking client key:  {client_key}  (exists={os.path.exists(client_key)})")
+            if os.path.exists(client_cert) and os.path.exists(client_key):
+                try:
+                    context.load_cert_chain(certfile=client_cert, keyfile=client_key)
+                    cert_loaded = True
+                    debug(f"  Loaded client cert+key OK: {cert_name} / {key_name}")
+                    break
+                except Exception as e:
+                    debug(f"  Failed to load client cert+key ({cert_name}): {e}")
+
+        if ca_loaded and cert_loaded:
             break
 
-    # Always disable server hostname verification because VNC targets are often IPs
+    if not cert_loaded:
+        debug("WARNING: No client certificate found. QEMU may reject the connection if vnc_tls_x509_verify=1.")
+        debug("         Place client-cert.pem and client-key.pem in /etc/pki/libvirt-vnc/ or /etc/pki/qemu/")
+
+    # Disable server hostname / cert verification (targets are IPs, may be self-signed)
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
 
     return context
+
 
 def recv_exact(sock, n, label):
     """Receive exactly n bytes, logging each chunk."""
