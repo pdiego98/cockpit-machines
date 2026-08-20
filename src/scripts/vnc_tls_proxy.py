@@ -17,11 +17,11 @@ def create_ssl_context(args):
     
     # PKI paths used by libvirt/QEMU for VNC TLS
     # Filenames follow libvirt convention: client-cert.pem / client-key.pem
-    pki_paths = [
+    pki_paths = list(dict.fromkeys([
         args.cert_dir,
         "/etc/pki/libvirt-vnc",
         "/etc/pki/qemu",
-    ]
+    ]))
     
     # Try both hyphenated (libvirt style) and non-hyphenated (older style) names
     cert_name_pairs = [
@@ -205,13 +205,31 @@ def main():
         # noVNC does not speak VeNCrypt, so we present a plain VNC handshake
         # and relay the already-established TLS connection underneath.
 
-        # Step A: Send QEMU's RFB version to noVNC
+        # Step A: Send the outer RFB version to noVNC
         client_sock.sendall(server_rfb)
         debug(f"Sent RFB version to noVNC: {server_rfb!r}")
 
         # Step B: Read noVNC's RFB version response
         client_rfb = recv_exact(client_sock, 12, "noVNC RFB version")
         debug(f"noVNC RFB version: {client_rfb!r}")
+
+        # VeNCrypt restarts the RFB negotiation inside the TLS tunnel. QEMU
+        # must receive the client's second version before it sends security
+        # types; noVNC only knows about the outer negotiation.
+        tls_rfb = recv_exact(tls_sock, 12, "QEMU post-TLS RFB version")
+        if not tls_rfb.startswith(b"RFB "):
+            raise Exception(f"Unexpected post-TLS RFB version: {tls_rfb!r}")
+        debug(f"QEMU post-TLS RFB version: {tls_rfb!r}")
+        tls_sock.sendall(client_rfb)
+        debug(f"Sent noVNC RFB version to QEMU inside TLS: {client_rfb!r}")
+
+        qemu_tls_num = recv_exact(tls_sock, 1, "QEMU post-TLS security count")
+        if qemu_tls_num == b'\x00':
+            reason_len = int.from_bytes(recv_exact(tls_sock, 4, "post-TLS error len"), 'big')
+            reason = recv_exact(tls_sock, reason_len, "post-TLS error")
+            raise Exception(f"QEMU reported post-TLS error: {reason!r}")
+        qemu_tls_sec_types = recv_exact(tls_sock, qemu_tls_num[0], "QEMU post-TLS security types")
+        debug(f"QEMU post-TLS security types: {list(qemu_tls_sec_types)}")
 
         # Step C: Send security type list to noVNC
         # For *None subtypes: no password needed → offer security type 1 (None)
@@ -232,6 +250,15 @@ def main():
         debug(f"noVNC chose security type: {client_chosen.hex()}")
         if client_chosen[0] != fake_sec_type:
             raise Exception(f"noVNC chose unexpected security type {client_chosen[0]}, expected {fake_sec_type}")
+
+        if fake_sec_type not in qemu_tls_sec_types:
+            raise Exception(f"QEMU does not offer translated security type {fake_sec_type}: {list(qemu_tls_sec_types)}")
+        tls_sock.sendall(client_chosen)
+        debug(f"Sent noVNC security choice to QEMU inside TLS: {client_chosen.hex()}")
+
+        security_result = recv_exact(tls_sock, 4, "QEMU security result")
+        client_sock.sendall(security_result)
+        debug(f"Sent QEMU security result to noVNC: {security_result.hex()}")
             
         debug("Fake handshake with noVNC complete. Entering passthrough mode.")
 
