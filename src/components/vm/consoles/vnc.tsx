@@ -391,7 +391,14 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
 
             try {
                 const qemu_conf = await readQemuConf();
+                console.debug("VNC console configuration", {
+                    tls: qemu_conf.vnc_tls,
+                    certDir: qemu_conf.vnc_tls_x509_cert_dir,
+                    address: consoleDetail.address,
+                    port: portStr,
+                });
                 if (qemu_conf.vnc_tls) {
+                    console.debug("Starting VNC TLS proxy");
                     const proxy_channel = cockpit.spawn([
                         "python3",
                         "-c",
@@ -405,11 +412,17 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
                         let out = "";
                         proxy_channel.stream(data => {
                             out += data;
+                            console.debug("VNC TLS proxy output", data);
                             if (out.includes('\n')) {
-                                resolve(out.trim());
+                                const proxyPort = out.trim();
+                                console.debug("VNC TLS proxy listening", proxyPort);
+                                resolve(proxyPort);
                             }
                         });
-                        proxy_channel.done(reject);
+                        proxy_channel.done(ex => {
+                            console.error("VNC TLS proxy exited before listening", ex);
+                            reject(ex);
+                        });
                     });
 
                     targetAddress = "127.0.0.1";
@@ -434,6 +447,11 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
             });
             this.setState({
                 path: `${prefix.slice(1)}?${window.btoa(query)}`,
+            });
+            console.debug("VNC console stream channel configured", {
+                address: targetAddress,
+                port: targetPort,
+                tlsProxy: targetAddress === "127.0.0.1",
             });
         });
     }
@@ -481,6 +499,11 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
 
     async onDisconnected(clean: boolean) { // server disconnected
         console.info('Connection lost: ', clean ? "clean" : "unclean");
+        console.debug("VNC console disconnected", {
+            clean,
+            proxyRunning: !!this.proxy_channel,
+            path: this.state.path,
+        });
         let reason;
         if (clean)
             reason = null;

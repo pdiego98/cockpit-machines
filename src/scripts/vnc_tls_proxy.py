@@ -12,12 +12,13 @@ def debug(msg):
     with open("/tmp/cockpit_vnc_tls_proxy.log", "a") as f:
         print(msg, file=f)
 
-def create_ssl_context():
+def create_ssl_context(args):
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
     
     # PKI paths used by libvirt/QEMU for VNC TLS
     # Filenames follow libvirt convention: client-cert.pem / client-key.pem
     pki_paths = [
+        args.cert_dir,
         "/etc/pki/libvirt-vnc",
         "/etc/pki/qemu",
     ]
@@ -90,6 +91,7 @@ def recv_exact(sock, n, label):
 
 def main():
     parser = argparse.ArgumentParser(description="VNC TLS Proxy")
+    parser.add_argument("--cert-dir", default="/etc/pki/libvirt-vnc", help="VNC TLS certificate directory")
     parser.add_argument("host", help="Destination VNC host")
     parser.add_argument("port", type=int, help="Destination VNC port")
     args = parser.parse_args()
@@ -113,7 +115,7 @@ def main():
         listen_sock.close()
 
     try:
-        context = create_ssl_context()
+        context = create_ssl_context(args)
         target_sock = socket.create_connection((args.host, args.port))
         debug(f"Connected to QEMU {args.host}:{args.port}")
         
