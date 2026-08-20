@@ -396,6 +396,7 @@ export class VncActive extends React.Component<VncActiveProps, VncActiveState> {
                         "python3",
                         "-c",
                         vncTlsProxyScript as string,
+                        "--cert-dir", qemu_conf.vnc_tls_x509_cert_dir,
                         consoleDetail.address,
                         portStr
                     ], { err: "message", superuser: "try" });

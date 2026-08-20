@@ -993,15 +993,18 @@ export function vmHasVFIOHostDevs(vm: VM): boolean {
 export interface QemuConf {
     vnc_tls: boolean;
     vnc_password: string | null;
+    vnc_tls_x509_cert_dir: string;
 }
 
 const VNC_TLS_RX = /^[ \t]*vnc_tls[ \t]*=[ \t]*([0-9]*)/m;
 const VNC_PASSWORD_RX = /^[ \t]*vnc_password[ \t]*=[ \t]*"([^"\\]*(?:\\.[^"\\]*)*)"/m;
+const VNC_TLS_CERT_DIR_RX = /^[ \t]*vnc_tls_x509_cert_dir[ \t]*=[ \t]*"([^"]+)"/m;
 
 export async function readQemuConf(): Promise<QemuConf> {
     const conf: QemuConf = {
         vnc_tls: false,
         vnc_password: null,
+        vnc_tls_x509_cert_dir: "/etc/pki/libvirt-vnc",
     };
 
     let text = "";
@@ -1021,6 +1024,10 @@ export async function readQemuConf(): Promise<QemuConf> {
     const password_match = text.match(VNC_PASSWORD_RX);
     if (password_match)
         conf.vnc_password = password_match[1].replaceAll('\\"', '"');
+
+    const cert_dir_match = text.match(VNC_TLS_CERT_DIR_RX);
+    if (cert_dir_match)
+        conf.vnc_tls_x509_cert_dir = cert_dir_match[1];
 
     return conf;
 }
